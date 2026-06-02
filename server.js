@@ -405,8 +405,20 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message || 'Server error' });
 });
 
-initDb().then(() => {
-  app.listen(PORT, () => console.log(`Football Register API v0.5 kører på port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Football Register API v0.5 kører på port ${PORT}`);
+
+  // Initialise the database in the background so the HTTP server (and the
+  // /health endpoint) is reachable immediately, even if the database is slow
+  // to become available or DATABASE_URL has not been resolved yet.
+  initDb()
+    .then(() => {
+      console.log('Database initialiseret succesfuldt.');
+    })
+    .catch(err => {
+      console.error('Database initialisering fejlede (serveren kører stadig):', err);
+    });
+
   if (AUTO_UPDATE_ENABLED) {
     cron.schedule('0 * * * *', async () => {
       console.log('Cron: opdaterer alle aktive ligaer...');
@@ -419,7 +431,4 @@ initDb().then(() => {
       catch (err) { console.error('History cron error:', err); }
     });
   }
-}).catch(err => {
-  console.error('Kunne ikke starte backend:', err);
-  process.exit(1);
 });
