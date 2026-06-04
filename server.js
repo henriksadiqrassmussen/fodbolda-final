@@ -29,8 +29,21 @@ const pool = new Pool({
 });
 
 const app = express();
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+
+// Robust CORS for Simply.com + Railway. Default is open because frontend may run on fodbold.eu,
+// www.fodbold.eu or directly from a local/static test page.
+const corsOrigin = process.env.CORS_ORIGIN || '*';
+app.use(cors({
+  origin: corsOrigin === '*' ? true : corsOrigin.split(',').map(x => x.trim()).filter(Boolean),
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false
+}));
+app.options('*', cors());
 app.use(express.json({ limit: '25mb' }));
+
+let dbReady = false;
+let dbError = null;
 
 async function query(sql, params = []) {
   const client = await pool.connect();
@@ -247,7 +260,29 @@ function h2hStats(rows, teamA, teamB) {
   return stats;
 }
 
-app.get('/health', (_req, res) => res.json({ ok:true, app:'Football Result Register API', version:'0.5.0', time:new Date().toISOString() }));
+app.get('/health', (_req, res) => res.json({
+  ok: true,
+  app: 'Football Result Register API',
+  version: '0.5.1-railway-clean',
+  time: new Date().toISOString(),
+  dbReady,
+  dbError: dbError ? String(dbError.message || dbError) : null
+}));
+
+app.get('/api/debug/routes', (_req, res) => res.json({
+  ok: true,
+  routes: [
+    'GET /health',
+    'GET /api/register',
+    'POST /api/sync/push',
+    'POST /api/admin/update-all',
+    'POST /api/admin/update-history?years=5',
+    'GET /api/matches/upcoming?leagueId=all&limit=20',
+    'GET /api/matches/search',
+    'GET /api/h2h',
+    'GET /api/odds/h2h'
+  ]
+}));
 app.get('/api/register', async (_req, res, next) => {
   try {
     const leagues = (await query('SELECT id, provider, name, country, badge, enabled FROM leagues ORDER BY name')).rows.map(r => ({ id:r.id, provider:r.provider, name:r.name, country:r.country, badge:r.badge, enabled:r.enabled }));
@@ -406,19 +441,14 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Football Register API v0.5 kører på port ${PORT}`);
+  console.log(`Football Register API v0.5.1 kører på port ${PORT}`);
+  console.log(`Healthcheck: /health`);
+});
 
-  // Initialise the database in the background so the HTTP server (and the
-  // /health endpoint) is reachable immediately, even if the database is slow
-  // to become available or DATABASE_URL has not been resolved yet.
-  initDb()
-    .then(() => {
-      console.log('Database initialiseret succesfuldt.');
-    })
-    .catch(err => {
-      console.error('Database initialisering fejlede (serveren kører stadig):', err);
-    });
-
+initDb().then(() => {
+  dbReady = true;
+  dbError = null;
+  console.log('Database initialiseret korrekt.');
   if (AUTO_UPDATE_ENABLED) {
     cron.schedule('0 * * * *', async () => {
       console.log('Cron: opdaterer alle aktive ligaer...');
@@ -431,4 +461,8 @@ app.listen(PORT, () => {
       catch (err) { console.error('History cron error:', err); }
     });
   }
+}).catch(err => {
+  dbReady = false;
+  dbError = err;
+  console.error('Database kunne ikke initialiseres. Backend bliver online, så Railway healthcheck kan bestå, men API-routes kræver DATABASE_URL/PostgreSQL:', err);
 });
