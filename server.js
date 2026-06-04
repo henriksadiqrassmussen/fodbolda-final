@@ -263,7 +263,7 @@ function h2hStats(rows, teamA, teamB) {
 app.get('/health', (_req, res) => res.json({
   ok: true,
   app: 'Football Result Register API',
-  version: '0.5.1-railway-clean',
+  version: '0.5.2-idiotsikker',
   time: new Date().toISOString(),
   dbReady,
   dbError: dbError ? String(dbError.message || dbError) : null
@@ -273,6 +273,7 @@ app.get('/api/debug/routes', (_req, res) => res.json({
   ok: true,
   routes: [
     'GET /health',
+    'GET /api/debug/db',
     'GET /api/register',
     'POST /api/sync/push',
     'POST /api/admin/update-all',
@@ -283,6 +284,64 @@ app.get('/api/debug/routes', (_req, res) => res.json({
     'GET /api/odds/h2h'
   ]
 }));
+
+function maskValue(value) {
+  if (!value) return null;
+  const str = String(value);
+  if (str.length <= 10) return '***';
+  return str.slice(0, 6) + '...' + str.slice(-6);
+}
+function dbFallbackPayload(extra = {}) {
+  return {
+    ok: true,
+    fallback: true,
+    dbReady: false,
+    message: 'PostgreSQL er ikke koblet korrekt endnu. API svarer sikkert med tomme lokale data, så frontend ikke crasher.',
+    dbError: dbError ? String(dbError.message || dbError) : null,
+    ...extra
+  };
+}
+function emptyStats(teamA = '', teamB = '') {
+  return { teamA, teamB, total:0, teamAWins:0, draws:0, teamBWins:0, latest:null, rows:[] };
+}
+
+app.get('/api/debug/db', (_req, res) => res.json({
+  ok: true,
+  dbReady,
+  dbError: dbError ? String(dbError.message || dbError) : null,
+  databaseUrlPresent: !!process.env.DATABASE_URL,
+  databaseUrlPreview: maskValue(process.env.DATABASE_URL),
+  pgssl: process.env.PGSSL || null,
+  port: process.env.PORT || null,
+  note: dbReady ? 'Database virker.' : 'Database virker ikke endnu. Tjek DATABASE_URL på Railway backend-service.'
+}));
+
+// Idiotsikker fallback: Hvis Postgres ikke er korrekt sat endnu, skal frontend stadig kunne åbne.
+// Disse routes returnerer tomme, men gyldige svar i stedet for 500/CORS/Failed to fetch.
+app.use('/api', (req, res, next) => {
+  if (dbReady) return next();
+  const method = req.method.toUpperCase();
+  const path = req.path;
+  if (method === 'GET' && path === '/register') return res.json(dbFallbackPayload({ leagues: DEFAULT_LEAGUES, teams: [], matches: [] }));
+  if (method === 'GET' && path === '/matches/upcoming') return res.json(dbFallbackPayload({ count: 0, matches: [] }));
+  if (method === 'GET' && path === '/matches/search') return res.json(dbFallbackPayload({ count: 0, matches: [] }));
+  if ((method === 'GET' || method === 'POST') && path === '/admin/update-all') return res.json(dbFallbackPayload({ results: [], action: 'update-all skipped until dbReady=true' }));
+  if ((method === 'GET' || method === 'POST') && path === '/admin/update-history') return res.json(dbFallbackPayload({ years: Number(req.query.years || DEFAULT_HISTORY_YEARS), results: [], action: 'update-history skipped until dbReady=true' }));
+  if (method === 'POST' && path === '/sync/push') return res.json(dbFallbackPayload({ leagues: 0, teams: 0, matches: 0, saved: false }));
+  if (method === 'GET' && path === '/h2h') {
+    const teamA = String(req.query.teamA || '').trim();
+    const teamB = String(req.query.teamB || '').trim();
+    return res.json(dbFallbackPayload({ years: Number(req.query.years || DEFAULT_HISTORY_YEARS), leagueId: String(req.query.leagueId || 'all'), ...emptyStats(teamA, teamB) }));
+  }
+  if (method === 'GET' && path === '/h2h/top') return res.json(dbFallbackPayload({ years: Number(req.query.years || DEFAULT_HISTORY_YEARS), leagueId: String(req.query.leagueId || 'all'), pairs: [] }));
+  if (method === 'GET' && path === '/odds/h2h') {
+    const teamA = String(req.query.teamA || '').trim();
+    const teamB = String(req.query.teamB || '').trim();
+    const stats = emptyStats(teamA, teamB);
+    return res.json(dbFallbackPayload({ years: Number(req.query.years || DEFAULT_HISTORY_YEARS), leagueId: String(req.query.leagueId || 'all'), teamA, teamB, stats, odds: buildOddsFromCounts({ total:0, teamAWins:0, draws:0, teamBWins:0 }) }));
+  }
+  next();
+});
 app.get('/api/register', async (_req, res, next) => {
   try {
     const leagues = (await query('SELECT id, provider, name, country, badge, enabled FROM leagues ORDER BY name')).rows.map(r => ({ id:r.id, provider:r.provider, name:r.name, country:r.country, badge:r.badge, enabled:r.enabled }));
@@ -441,7 +500,7 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Football Register API v0.5.1 kører på port ${PORT}`);
+  console.log(`Football Register API v0.5.2 idiotsikker kører på port ${PORT}`);
   console.log(`Healthcheck: /health`);
 });
 
